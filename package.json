@@ -1,27 +1,22 @@
 {
-  "name": "backend",
+  "name": "aurora-catalog-backend",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node --no-warnings index.js",
+    "dev": "node --no-warnings index.js",
+    "db:migrate": "node --no-warnings scripts/migrate.js",
+    "db:seed": "node --no-warnings scripts/seed.js",
+    "db:setup": "npm run db:migrate && npm run db:seed",
+    "check": "node --check index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "API de catalogo virtual para Aurora",
   "dependencies": {
-    "bcrypt": "^6.0.0",
-    "bcryptjs": "^3.0.2",
-    "cloudinary": "^1.41.3",
-    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
-    "culqi-node": "^2.1.0",
     "dotenv": "^17.2.1",
-    "express": "^5.1.0",
-    "jsonwebtoken": "^9.0.2",
-    "multer": "^2.0.2",
-    "multer-storage-cloudinary": "^4.0.0",
-    "mysql2": "^3.14.3",
-    "node-fetch": "^3.3.2"
+    "express": "^5.1.0"
   }
 }
