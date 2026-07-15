@@ -7,7 +7,12 @@
     "dev": "node --no-warnings index.js",
     "db:migrate": "node --no-warnings scripts/migrate.js",
     "db:seed": "node --no-warnings scripts/seed.js",
+    "create-admin": "node --no-warnings scripts/create-admin.js",
+    "db:create-admin": "node --no-warnings scripts/create-admin.js",
+    "db:migrate-data": "node --no-warnings scripts/migrate-sqlite-to-postgres.js",
     "db:setup": "npm run db:migrate && npm run db:seed",
+    "build": "npm run check",
+    "test": "node --test",
     "check": "node --check index.js"
   },
   "keywords": [],
@@ -15,8 +20,13 @@
   "license": "ISC",
   "description": "API de catalogo virtual para Aurora",
   "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.10.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
+    "pg": "^8.22.0"
   }
 }

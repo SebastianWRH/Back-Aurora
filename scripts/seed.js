@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { db, dbPath } = require('../src/database');
+const { transaction, closePool } = require('../src/database');
 
 const categories = [
   {
@@ -270,120 +270,125 @@ const products = [
   }
 ];
 
-const resetTablesSql = `
-  DELETE FROM product_tag_relations;
-  DELETE FROM product_variants;
-  DELETE FROM product_images;
-  DELETE FROM products;
-  DELETE FROM product_tags;
-  DELETE FROM categories;
-  DELETE FROM catalog_settings;
-`;
+const run = async () => {
+  await transaction(async (client) => {
+    const categoryIds = new Map();
+    const tagIds = new Map();
 
-const insertCategory = db.prepare(`
-  INSERT INTO categories (name, slug, description, image, is_active)
-  VALUES (?, ?, ?, ?, 1)
-`);
+    for (const category of categories) {
+      const result = await client.query(`
+        INSERT INTO categories (name, slug, description, image_url, is_active)
+        VALUES ($1, $2, $3, $4, TRUE)
+        ON CONFLICT (slug) DO UPDATE
+        SET name = EXCLUDED.name,
+            description = EXCLUDED.description,
+            image_url = COALESCE(categories.image_url, EXCLUDED.image_url),
+            is_active = TRUE
+        RETURNING id
+      `, [category.name, category.slug, category.description, category.image]);
+      categoryIds.set(category.slug, result.rows[0].id);
+    }
 
-const insertTag = db.prepare(`
-  INSERT INTO product_tags (name, slug)
-  VALUES (?, ?)
-`);
+    for (const tag of tags) {
+      const result = await client.query(`
+        INSERT INTO product_tags (name, slug)
+        VALUES ($1, $2)
+        ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+        RETURNING id
+      `, [tag.name, tag.slug]);
+      tagIds.set(tag.slug, result.rows[0].id);
+    }
 
-const insertProduct = db.prepare(`
-  INSERT INTO products (
-    category_id, name, slug, description, price, material, color, size,
-    stock_status, is_featured, is_active
-  )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-`);
+    for (const product of products) {
+      const productResult = await client.query(`
+        INSERT INTO products (
+          category_id, name, slug, description, price, material, color, size,
+          stock_status, is_featured, is_active
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+        ON CONFLICT (slug) DO UPDATE
+        SET category_id = EXCLUDED.category_id,
+            name = EXCLUDED.name,
+            description = EXCLUDED.description,
+            price = EXCLUDED.price,
+            material = EXCLUDED.material,
+            color = EXCLUDED.color,
+            size = EXCLUDED.size,
+            stock_status = EXCLUDED.stock_status,
+            is_featured = EXCLUDED.is_featured,
+            is_active = TRUE
+        RETURNING id
+      `, [
+        categoryIds.get(product.category),
+        product.name,
+        product.slug,
+        product.description,
+        product.price,
+        product.material,
+        product.color,
+        product.size,
+        product.stock_status,
+        Boolean(product.is_featured)
+      ]);
 
-const insertImage = db.prepare(`
-  INSERT INTO product_images (product_id, image_url, alt_text, sort_order)
-  VALUES (?, ?, ?, ?)
-`);
+      const productId = productResult.rows[0].id;
+      const imageCount = await client.query('SELECT COUNT(*) AS count FROM product_images WHERE product_id = $1', [productId]);
 
-const insertVariant = db.prepare(`
-  INSERT INTO product_variants (product_id, name, value, price_adjustment, stock_status)
-  VALUES (?, ?, ?, ?, ?)
-`);
+      if (Number(imageCount.rows[0].count) === 0) {
+        for (const [index, image] of product.images.entries()) {
+          await client.query(`
+            INSERT INTO product_images (product_id, secure_url, alt_text, sort_order, is_primary)
+            VALUES ($1, $2, $3, $4, $5)
+          `, [productId, image, product.name, index, index === 0]);
+        }
+      }
 
-const insertRelation = db.prepare(`
-  INSERT INTO product_tag_relations (product_id, tag_id)
-  VALUES (?, ?)
-`);
+      await client.query('DELETE FROM product_variants WHERE product_id = $1', [productId]);
+      for (const variant of product.variants) {
+        await client.query(`
+          INSERT INTO product_variants (product_id, name, value, price_adjustment, stock_status)
+          VALUES ($1, $2, $3, $4, $5)
+        `, [productId, variant.name, variant.value, variant.price_adjustment, variant.stock_status]);
+      }
 
-const insertSettings = db.prepare(`
-  INSERT INTO catalog_settings (
-    id, store_name, whatsapp_number, instagram_url, default_whatsapp_message, currency
-  )
-  VALUES (1, ?, ?, ?, ?, ?)
-`);
+      await client.query('DELETE FROM product_tag_relations WHERE product_id = $1', [productId]);
+      for (const tagSlug of product.tags) {
+        await client.query(`
+          INSERT INTO product_tag_relations (product_id, tag_id)
+          VALUES ($1, $2)
+          ON CONFLICT DO NOTHING
+        `, [productId, tagIds.get(tagSlug)]);
+      }
+    }
 
-const categoryBySlug = db.prepare('SELECT id FROM categories WHERE slug = ?');
-const tagBySlug = db.prepare('SELECT id FROM product_tags WHERE slug = ?');
+    await client.query(`
+      INSERT INTO catalog_settings (
+        id, store_name, whatsapp_number, instagram_url, default_whatsapp_message, currency
+      )
+      VALUES (1, $1, $2, $3, $4, $5)
+      ON CONFLICT (id) DO UPDATE
+      SET store_name = EXCLUDED.store_name,
+          whatsapp_number = EXCLUDED.whatsapp_number,
+          instagram_url = EXCLUDED.instagram_url,
+          default_whatsapp_message = EXCLUDED.default_whatsapp_message,
+          currency = EXCLUDED.currency
+    `, [
+      process.env.STORE_NAME || 'Aurora Catalogo',
+      process.env.WHATSAPP_NUMBER || '51942346985',
+      process.env.INSTAGRAM_URL || 'https://www.instagram.com/au.rora_pe/',
+      'Hola, me interesa consultar disponibilidad y coordinar una compra.',
+      'S/'
+    ]);
+  });
 
-db.exec('BEGIN');
+  console.log('Seed loaded into PostgreSQL');
+};
 
-try {
-  db.exec(resetTablesSql);
-
-  for (const category of categories) {
-    insertCategory.run(category.name, category.slug, category.description, category.image);
-  }
-
-  for (const tag of tags) {
-    insertTag.run(tag.name, tag.slug);
-  }
-
-  for (const product of products) {
-    const category = categoryBySlug.get(product.category);
-    const result = insertProduct.run(
-      category.id,
-      product.name,
-      product.slug,
-      product.description,
-      product.price,
-      product.material,
-      product.color,
-      product.size,
-      product.stock_status,
-      product.is_featured
-    );
-
-    const productId = result.lastInsertRowid;
-
-    product.images.forEach((image, index) => {
-      insertImage.run(productId, image, product.name, index);
-    });
-
-    product.variants.forEach(variant => {
-      insertVariant.run(
-        productId,
-        variant.name,
-        variant.value,
-        variant.price_adjustment,
-        variant.stock_status
-      );
-    });
-
-    product.tags.forEach(tagSlug => {
-      const tag = tagBySlug.get(tagSlug);
-      insertRelation.run(productId, tag.id);
-    });
-  }
-
-  insertSettings.run(
-    process.env.STORE_NAME || 'Aurora Catalogo',
-    process.env.WHATSAPP_NUMBER || '51942346985',
-    process.env.INSTAGRAM_URL || 'https://www.instagram.com/au.rora_pe/',
-    'Hola, me interesa consultar disponibilidad y coordinar una compra.',
-    'S/'
-  );
-
-  db.exec('COMMIT');
-  console.log(`Seed loaded into ${dbPath}`);
-} catch (error) {
-  db.exec('ROLLBACK');
-  throw error;
-}
+run()
+  .catch((error) => {
+    console.error('Seed failed:', error.message);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await closePool();
+  });
