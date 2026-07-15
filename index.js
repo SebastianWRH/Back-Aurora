@@ -3,10 +3,14 @@ require('dotenv').config();
 const PORT = process.env.PORT || 3000;
 
 const { ensureDatabaseConnection } = require('./src/database');
+const { runPendingMigrations } = require('./src/migrations');
 const { createServer } = require('./src/server');
 
 const start = async () => {
   await ensureDatabaseConnection();
+  if (process.env.RUN_MIGRATIONS_ON_START !== 'false') {
+    await runPendingMigrations();
+  }
   const app = createServer();
 
   app.listen(PORT, () => {
