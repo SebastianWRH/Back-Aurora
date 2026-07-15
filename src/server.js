@@ -22,6 +22,7 @@ const {
 } = require('./catalogService');
 const {
   clearAdminSessionCookie,
+  getAuthenticatedAdmin,
   requireAdmin,
   setAdminSessionCookie,
   toPublicAdmin
@@ -246,6 +247,25 @@ const createServer = () => {
   app.post('/api/admin/auth/logout', asyncHandler(async (req, res) => {
     clearAdminSessionCookie(res);
     res.status(204).send();
+  }));
+
+  app.get('/api/admin/auth/status', asyncHandler(async (req, res) => {
+    try {
+      const admin = await getAuthenticatedAdmin(req);
+      res.json({ admin, authenticated: true });
+    } catch (error) {
+      if (
+        error instanceof HttpError &&
+        error.status === 401 ||
+        error.name === 'JsonWebTokenError' ||
+        error.name === 'TokenExpiredError'
+      ) {
+        res.json({ admin: null, authenticated: false });
+        return;
+      }
+
+      throw error;
+    }
   }));
 
   app.get('/api/admin/auth/me', requireAdmin, asyncHandler(async (req, res) => {

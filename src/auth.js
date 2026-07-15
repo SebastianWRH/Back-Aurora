@@ -83,26 +83,30 @@ const getSessionToken = (req) => {
   return cookies[SESSION_COOKIE_NAME] || null;
 };
 
+const getAuthenticatedAdmin = async (req) => {
+  const token = getSessionToken(req);
+
+  if (!token) {
+    throw createHttpError(401, 'Autenticacion requerida');
+  }
+
+  const payload = jwt.verify(token, getSessionSecret());
+  const result = await query(
+    'SELECT id, name, email, role, is_active FROM admins WHERE id = $1 LIMIT 1',
+    [payload.sub]
+  );
+  const admin = result.rows[0];
+
+  if (!admin || !admin.is_active) {
+    throw createHttpError(401, 'Sesion invalida');
+  }
+
+  return toPublicAdmin(admin);
+};
+
 const requireAdmin = async (req, res, next) => {
   try {
-    const token = getSessionToken(req);
-
-    if (!token) {
-      throw createHttpError(401, 'Autenticacion requerida');
-    }
-
-    const payload = jwt.verify(token, getSessionSecret());
-    const result = await query(
-      'SELECT id, name, email, role, is_active FROM admins WHERE id = $1 LIMIT 1',
-      [payload.sub]
-    );
-    const admin = result.rows[0];
-
-    if (!admin || !admin.is_active) {
-      throw createHttpError(401, 'Sesion invalida');
-    }
-
-    req.admin = toPublicAdmin(admin);
+    req.admin = await getAuthenticatedAdmin(req);
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
@@ -118,6 +122,7 @@ module.exports = {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
   clearAdminSessionCookie,
+  getAuthenticatedAdmin,
   requireAdmin,
   setAdminSessionCookie,
   toPublicAdmin

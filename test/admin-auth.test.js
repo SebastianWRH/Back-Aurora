@@ -273,6 +273,32 @@ test('/me rejects missing session', async () => {
   });
 });
 
+test('/status returns anonymous state without session', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/admin/auth/status`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.authenticated, false);
+    assert.equal(body.admin, null);
+  });
+});
+
+test('/status returns admin with valid session', async () => {
+  await withServer(async (baseUrl) => {
+    const cookie = await loginAndGetCookie(baseUrl);
+    const response = await fetch(`${baseUrl}/api/admin/auth/status`, {
+      headers: { Cookie: cookie }
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.authenticated, true);
+    assert.equal(body.admin.email, 'admin@example.com');
+    assert.equal(body.admin.password_hash, undefined);
+  });
+});
+
 test('admin endpoint rejects missing session', async () => {
   await withServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/admin/products`);

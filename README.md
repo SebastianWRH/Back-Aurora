@@ -71,6 +71,7 @@ Si ya existe un administrador con ese correo, el script falla para evitar sobres
 ## Inicio y cierre de sesion
 
 - Login: `POST /api/admin/auth/login`
+- Estado de sesion para la pantalla de login: `GET /api/admin/auth/status`
 - Sesion actual: `GET /api/admin/auth/me`
 - Logout: `POST /api/admin/auth/logout`
 
