@@ -39,17 +39,25 @@ const asyncHandler = (handler) => (req, res, next) => {
   Promise.resolve(handler(req, res, next)).catch(next);
 };
 
+const normalizeOrigin = (origin) => {
+  try {
+    return new URL(origin).origin;
+  } catch {
+    return origin.replace(/\/+$/, '');
+  }
+};
+
 const getAllowedOrigins = () => {
   const configured = (process.env.FRONTEND_URL || '')
     .split(',')
-    .map(origin => origin.trim())
+    .map(origin => normalizeOrigin(origin.trim()))
     .filter(Boolean);
 
   if (process.env.NODE_ENV !== 'production') {
     configured.push('http://localhost:5173', 'http://127.0.0.1:5173');
   }
 
-  return configured;
+  return [...new Set(configured)];
 };
 
 const createCorsOptions = () => {
@@ -68,6 +76,26 @@ const createCorsOptions = () => {
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
   };
+};
+
+const isTrustedOrigin = (origin) => getAllowedOrigins().includes(origin);
+
+const requireTrustedAdminOrigin = (req, res, next) => {
+  const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+  if (!req.path.startsWith('/api/admin') || safeMethods.has(req.method)) {
+    next();
+    return;
+  }
+
+  const origin = req.get('origin');
+
+  if (!origin || isTrustedOrigin(origin)) {
+    next();
+    return;
+  }
+
+  next(createHttpError(403, 'Origen no permitido para operaciones administrativas'));
 };
 
 const normalizeLoginEmail = (email = '') => String(email).trim().toLowerCase();
@@ -106,6 +134,7 @@ const createServer = () => {
 
   app.use(cors(createCorsOptions()));
   app.use(express.json({ limit: '1mb' }));
+  app.use(requireTrustedAdminOrigin);
 
   app.get('/', (req, res) => {
     res.json({

@@ -4,6 +4,7 @@ const { createHttpError } = require('./httpError');
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || 'aurora_admin_session';
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 8 * 60 * 60 * 1000);
+const allowedSameSiteValues = new Set(['lax', 'strict', 'none']);
 
 const getSessionSecret = () => {
   if (!process.env.SESSION_SECRET) {
@@ -13,13 +14,24 @@ const getSessionSecret = () => {
   return process.env.SESSION_SECRET;
 };
 
-const getCookieOptions = () => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
-  path: '/',
-  maxAge: SESSION_TTL_MS
-});
+const getSessionCookieSameSite = () => {
+  const configured = String(process.env.SESSION_COOKIE_SAME_SITE || '').trim().toLowerCase();
+  if (allowedSameSiteValues.has(configured)) return configured;
+
+  return process.env.NODE_ENV === 'production' ? 'none' : 'lax';
+};
+
+const getCookieOptions = () => {
+  const sameSite = getSessionCookieSameSite();
+
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production' || sameSite === 'none',
+    sameSite,
+    path: '/',
+    maxAge: SESSION_TTL_MS
+  };
+};
 
 const getClearCookieOptions = () => {
   const { maxAge, ...options } = getCookieOptions();

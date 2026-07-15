@@ -151,6 +151,63 @@ test('login succeeds with active admin and returns public admin data', async () 
   });
 });
 
+test('login sets cross-site compatible secure cookie in production', async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousSameSite = process.env.SESSION_COOKIE_SAME_SITE;
+  process.env.NODE_ENV = 'production';
+  delete process.env.SESSION_COOKIE_SAME_SITE;
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await postJson(baseUrl, '/api/admin/auth/login', {
+        email: 'admin@example.com',
+        password: 'CorrectPassword123'
+      });
+      const setCookie = response.headers.get('set-cookie');
+
+      assert.equal(response.status, 200);
+      assert.match(setCookie, /HttpOnly/);
+      assert.match(setCookie, /Secure/);
+      assert.match(setCookie, /SameSite=None/);
+    });
+  } finally {
+    process.env.NODE_ENV = previousNodeEnv;
+    if (previousSameSite === undefined) {
+      delete process.env.SESSION_COOKIE_SAME_SITE;
+    } else {
+      process.env.SESSION_COOKIE_SAME_SITE = previousSameSite;
+    }
+  }
+});
+
+test('CORS accepts FRONTEND_URL configured with trailing slash', async () => {
+  const previousFrontendUrl = process.env.FRONTEND_URL;
+  process.env.FRONTEND_URL = 'https://front.example.com/';
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://front.example.com',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type'
+        }
+      });
+
+      assert.equal(response.status, 204);
+      assert.equal(response.headers.get('access-control-allow-origin'), 'https://front.example.com');
+      assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+    });
+  } finally {
+    if (previousFrontendUrl === undefined) {
+      delete process.env.FRONTEND_URL;
+    } else {
+      process.env.FRONTEND_URL = previousFrontendUrl;
+    }
+  }
+});
+
 test('login rejects incorrect password with generic message', async () => {
   await withServer(async (baseUrl) => {
     const response = await postJson(baseUrl, '/api/admin/auth/login', {

@@ -25,6 +25,7 @@ CLOUDINARY_FOLDER=catalogo/productos
 MAX_IMAGE_SIZE_BYTES=5242880
 MAX_IMAGE_FILES=10
 SESSION_SECRET=
+SESSION_COOKIE_SAME_SITE=none
 SESSION_TTL_MS=28800000
 LOGIN_RATE_LIMIT_WINDOW_MS=900000
 LOGIN_RATE_LIMIT_MAX=5
@@ -77,7 +78,7 @@ El login devuelve solo datos publicos del administrador y establece la cookie `a
 
 - `HttpOnly`
 - `Secure` solo en `NODE_ENV=production`
-- `SameSite=Lax`
+- `SameSite=None` en produccion para permitir el panel en otro dominio, configurable con `SESSION_COOKIE_SAME_SITE`
 - `Path=/`
 - expiracion configurada por `SESSION_TTL_MS`
 
@@ -118,6 +119,7 @@ En produccion:
 
 - configura `NODE_ENV=production`;
 - usa HTTPS para que la cookie `Secure` viaje correctamente;
+- usa `SESSION_COOKIE_SAME_SITE=none` cuando frontend y backend estan en dominios distintos, por ejemplo Vercel + Render;
 - configura `FRONTEND_URL` con el dominio final del frontend.
 
 ## Cambiar contrasena o desactivar admin
