@@ -48,6 +48,7 @@ const variantImageSelect = `
     format,
     alt_text,
     sort_order,
+    is_primary,
     created_at
   FROM product_variant_images
 `;
@@ -93,11 +94,15 @@ const formatVariantImages = (images = []) => images.map(image => ({
   id: Number(image.id),
   variant_id: Number(image.variant_id),
   image_url: image.image_url || image.secure_url,
-  sort_order: Number(image.sort_order || 0)
+  sort_order: Number(image.sort_order || 0),
+  is_primary: Boolean(image.is_primary)
 }));
 
 const formatVariant = (variant, images = []) => {
   const formattedImages = formatVariantImages(images);
+  const mainImage = formattedImages.find(image => image.is_primary) || formattedImages[0] || null;
+  const galleryImages = formattedImages.filter(image => !mainImage || image.id !== mainImage.id);
+  const orderedImages = mainImage ? [mainImage, ...galleryImages] : formattedImages;
 
   return {
     ...variant,
@@ -112,8 +117,10 @@ const formatVariant = (variant, images = []) => {
     price_adjustment: Number(variant.price_adjustment || 0),
     sort_order: Number(variant.sort_order || 0),
     is_active: variant.is_active === undefined ? true : Boolean(variant.is_active),
-    images: formattedImages,
-    image_url: formattedImages[0]?.image_url || null
+    images: orderedImages,
+    main_image: mainImage,
+    gallery_images: galleryImages,
+    image_url: mainImage?.image_url || galleryImages[0]?.image_url || null
   };
 };
 
@@ -201,7 +208,7 @@ const getVariantImagesForVariants = async (variantIds, client = null) => {
   const result = await run(client, `
     ${variantImageSelect}
     WHERE variant_id = ANY($1::bigint[])
-    ORDER BY variant_id ASC, sort_order ASC, id ASC
+    ORDER BY variant_id ASC, is_primary DESC, sort_order ASC, id ASC
   `, [variantIds]);
 
   return result.rows.reduce((map, image) => {
@@ -216,7 +223,7 @@ const getProductVariantImages = async (variantId, client = null) => {
   const result = await run(client, `
     ${variantImageSelect}
     WHERE variant_id = $1
-    ORDER BY sort_order ASC, id ASC
+    ORDER BY is_primary DESC, sort_order ASC, id ASC
   `, [variantId]);
 
   return result.rows;

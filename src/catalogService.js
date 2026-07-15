@@ -56,17 +56,28 @@ const normalizeHexColor = (value = '') => {
 
 const isValidHexColor = (value) => !value || /^#[0-9a-fA-F]{6}$/.test(value);
 
-const getFieldFileKey = (fieldName = '') => fieldName
-  .replace(/^variant_images_/, '')
-  .replace(/^variantImages_/, '')
-  .replace(/^variantImages\[/, '')
-  .replace(/\]$/, '');
+const getFieldFileKey = (fieldName = '', prefixes = []) => {
+  let key = fieldName;
+
+  for (const prefix of prefixes) {
+    key = key.replace(prefix, '');
+  }
+
+  return key.replace(/\]$/, '');
+};
+
+const addGroupedFile = (map, key, file) => {
+  if (!map.has(key)) map.set(key, []);
+  map.get(key).push(file);
+};
 
 const groupProductFiles = (files = []) => {
   const grouped = {
     mainImage: null,
     galleryImages: [],
     legacyImages: [],
+    variantCoverImages: new Map(),
+    variantGalleryImages: new Map(),
     variantImages: new Map()
   };
 
@@ -86,10 +97,21 @@ const groupProductFiles = (files = []) => {
       continue;
     }
 
+    if (file.fieldname.startsWith('variant_cover_') || file.fieldname.startsWith('variantCover_') || file.fieldname.startsWith('variantCover[')) {
+      const key = getFieldFileKey(file.fieldname, [/^variant_cover_/, /^variantCover_/, /^variantCover\[/]);
+      addGroupedFile(grouped.variantCoverImages, key, file);
+      continue;
+    }
+
+    if (file.fieldname.startsWith('variant_gallery_') || file.fieldname.startsWith('variantGallery_') || file.fieldname.startsWith('variantGallery[')) {
+      const key = getFieldFileKey(file.fieldname, [/^variant_gallery_/, /^variantGallery_/, /^variantGallery\[/]);
+      addGroupedFile(grouped.variantGalleryImages, key, file);
+      continue;
+    }
+
     if (file.fieldname.startsWith('variant_images_') || file.fieldname.startsWith('variantImages_') || file.fieldname.startsWith('variantImages[')) {
-      const key = getFieldFileKey(file.fieldname);
-      if (!grouped.variantImages.has(key)) grouped.variantImages.set(key, []);
-      grouped.variantImages.get(key).push(file);
+      const key = getFieldFileKey(file.fieldname, [/^variant_images_/, /^variantImages_/, /^variantImages\[/]);
+      addGroupedFile(grouped.variantImages, key, file);
     }
   }
 
@@ -106,6 +128,12 @@ const normalizeVariantInput = (variant = {}, index = 0) => {
   const value = String(variant.value || variant.color_name || variant.color || '').trim();
   const colorHex = normalizeHexColor(variant.color_hex || variant.hex);
   const stockQuantity = toInteger(variant.stock_quantity ?? variant.stock);
+  const mainImageId = toInteger(
+    variant.main_image_id ||
+    variant.primary_image_id ||
+    variant.cover_image_id ||
+    variant.main_image?.id
+  );
 
   return {
     id: variant.id ? Number(variant.id) : null,
@@ -118,6 +146,7 @@ const normalizeVariantInput = (variant = {}, index = 0) => {
     stock_quantity: stockQuantity,
     is_active: normalizeBoolean(variant.is_active, true),
     sort_order: Number.isInteger(Number(variant.sort_order)) ? Number(variant.sort_order) : index,
+    main_image_id: mainImageId,
     images: parseJsonArray(variant.images),
     remove_image_ids: parseIdList(variant.remove_image_ids || variant.removed_image_ids)
   };
@@ -138,6 +167,33 @@ const validateVariants = (variants = []) => {
     const key = variant.value.toLowerCase();
     if (names.has(key)) throw createHttpError(400, `Color duplicado: ${variant.value}`);
     names.add(key);
+  }
+};
+
+const validateVariantFileGroups = (variants = [], groupedFiles) => {
+  const validKeys = new Set();
+
+  variants.forEach((variant) => {
+    validKeys.add(String(variant.client_id));
+    if (variant.id) validKeys.add(String(variant.id));
+  });
+
+  const assertValidKeys = (map, label) => {
+    for (const [key] of map.entries()) {
+      if (!validKeys.has(String(key))) {
+        throw createHttpError(400, `Imagen de ${label} sin color relacionado`);
+      }
+    }
+  };
+
+  assertValidKeys(groupedFiles.variantCoverImages, 'portada');
+  assertValidKeys(groupedFiles.variantGalleryImages, 'galeria');
+  assertValidKeys(groupedFiles.variantImages, 'color');
+
+  for (const [key, files] of groupedFiles.variantCoverImages.entries()) {
+    if (files.length > 1) {
+      throw createHttpError(400, `Solo se permite una portada para el color ${key}`);
+    }
   }
 };
 
@@ -224,13 +280,13 @@ const replaceProductVariants = async (client, productId, variants) => {
   }
 };
 
-const insertVariantImages = async (client, variantId, uploadedImages, productName, variantValue, startOrder = 0) => {
+const insertVariantImages = async (client, variantId, uploadedImages, productName, variantValue, startOrder = 0, options = {}) => {
   for (const [index, image] of uploadedImages.entries()) {
     await client.query(`
       INSERT INTO product_variant_images (
-        variant_id, secure_url, public_id, width, height, format, alt_text, sort_order
+        variant_id, secure_url, public_id, width, height, format, alt_text, sort_order, is_primary
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       variantId,
       image.secure_url,
@@ -239,29 +295,57 @@ const insertVariantImages = async (client, variantId, uploadedImages, productNam
       image.height,
       image.format,
       `${productName} - ${variantValue}`,
-      startOrder + index
+      startOrder + index,
+      Boolean(options.primary)
     ]);
   }
 };
 
-const updateVariantImageState = async (client, variantId, images) => {
+const updateVariantImageState = async (client, variantId, images, primaryImageId = null) => {
+  if (primaryImageId) {
+    await client.query('UPDATE product_variant_images SET is_primary = FALSE WHERE variant_id = $1', [variantId]);
+  }
+
   for (const [index, image] of parseJsonArray(images).entries()) {
     if (!image?.id) continue;
     await client.query(`
       UPDATE product_variant_images
       SET sort_order = $1,
-          alt_text = COALESCE($2, alt_text)
-      WHERE id = $3 AND variant_id = $4
+          alt_text = COALESCE($2, alt_text),
+          is_primary = $3
+      WHERE id = $4 AND variant_id = $5
     `, [
       Number.isInteger(Number(image.sort_order)) ? Number(image.sort_order) : index,
       image.alt_text || null,
+      primaryImageId
+        ? String(image.id) === String(primaryImageId)
+        : Boolean(image.is_primary),
       image.id,
       variantId
     ]);
   }
+
+  if (primaryImageId) {
+    await client.query('UPDATE product_variant_images SET is_primary = TRUE WHERE variant_id = $1 AND id = $2', [variantId, primaryImageId]);
+  }
 };
 
-const syncProductVariants = async (client, productId, productName, variants, uploadedVariantImages) => {
+const getUploadedVariantFiles = (map, variant) => (
+  map.get(String(variant.client_id)) || map.get(String(variant.id)) || []
+);
+
+const getNextImageOrder = (images = []) => (
+  images.length
+    ? Math.max(...images.map(image => Number(image.sort_order || 0))) + 1
+    : 0
+);
+
+const syncProductVariants = async (client, productId, productName, variants, uploadedVariantImages = {}) => {
+  const uploadedCoverImages = uploadedVariantImages.coverImages || new Map();
+  const uploadedGalleryImages = uploadedVariantImages.galleryImages || new Map();
+  const uploadedLegacyImages = uploadedVariantImages instanceof Map
+    ? uploadedVariantImages
+    : uploadedVariantImages.legacyImages || new Map();
   const existingVariants = await getProductVariants(productId, client);
   const existingIds = new Set(existingVariants.map(variant => Number(variant.id)));
   const incomingIds = new Set(variants.filter(variant => variant.id).map(variant => Number(variant.id)));
@@ -338,11 +422,41 @@ const syncProductVariants = async (client, productId, productName, variants, upl
       );
     }
 
-    await updateVariantImageState(client, variantId, variant.images);
+    await updateVariantImageState(client, variantId, variant.images, variant.main_image_id);
 
-    const nextImages = uploadedVariantImages.get(variant.client_id) || uploadedVariantImages.get(String(variant.id)) || [];
-    const currentImages = await getProductVariantImages(variantId, client);
-    await insertVariantImages(client, variantId, nextImages, productName, variant.value, currentImages.length);
+    const nextCoverImages = getUploadedVariantFiles(uploadedCoverImages, variant);
+    const nextGalleryImages = getUploadedVariantFiles(uploadedGalleryImages, variant);
+    const nextLegacyImages = getUploadedVariantFiles(uploadedLegacyImages, variant);
+
+    if (nextCoverImages.length) {
+      await client.query('UPDATE product_variant_images SET is_primary = FALSE WHERE variant_id = $1', [variantId]);
+      await insertVariantImages(client, variantId, nextCoverImages.slice(0, 1), productName, variant.value, 0, { primary: true });
+    }
+
+    let currentImages = await getProductVariantImages(variantId, client);
+    let imageOrder = getNextImageOrder(currentImages);
+
+    if (nextGalleryImages.length) {
+      await insertVariantImages(client, variantId, nextGalleryImages, productName, variant.value, imageOrder);
+      imageOrder += nextGalleryImages.length;
+    }
+
+    if (nextLegacyImages.length) {
+      currentImages = await getProductVariantImages(variantId, client);
+      const hasPrimaryImage = currentImages.some(image => image.is_primary);
+      const legacyMain = hasPrimaryImage ? [] : nextLegacyImages.slice(0, 1);
+      const legacyGallery = hasPrimaryImage ? nextLegacyImages : nextLegacyImages.slice(1);
+
+      if (legacyMain.length) {
+        await client.query('UPDATE product_variant_images SET is_primary = FALSE WHERE variant_id = $1', [variantId]);
+        await insertVariantImages(client, variantId, legacyMain, productName, variant.value, 0, { primary: true });
+      }
+
+      if (legacyGallery.length) {
+        const nextOrder = getNextImageOrder(await getProductVariantImages(variantId, client));
+        await insertVariantImages(client, variantId, legacyGallery, productName, variant.value, nextOrder);
+      }
+    }
   }
 
   return variantImagesToDelete;
@@ -378,6 +492,7 @@ const createProduct = async (body, files = []) => {
   const groupedFiles = groupProductFiles(files);
   validateProduct(product);
   validateVariants(variants);
+  validateVariantFileGroups(variants, groupedFiles);
 
   const categoryId = await resolveCategoryId(product.category_id || product.category_slug);
   if (!categoryId) throw createHttpError(400, 'Categoria invalida');
@@ -386,13 +501,19 @@ const createProduct = async (body, files = []) => {
   const uploadedMainImage = groupedFiles.mainImage ? await uploadFiles([groupedFiles.mainImage], 'products') : [];
   const uploadedGalleryImages = await uploadFiles(groupedFiles.galleryImages, 'products');
   const uploadedLegacyImages = await uploadFiles(groupedFiles.legacyImages, 'products');
-  const { uploaded: uploadedVariantImages, uploadedPublicIds: uploadedVariantPublicIds } =
+  const { uploaded: uploadedVariantCoverImages, uploadedPublicIds: uploadedVariantCoverPublicIds } =
+    await uploadVariantFileGroups(groupedFiles.variantCoverImages);
+  const { uploaded: uploadedVariantGalleryImages, uploadedPublicIds: uploadedVariantGalleryPublicIds } =
+    await uploadVariantFileGroups(groupedFiles.variantGalleryImages);
+  const { uploaded: uploadedLegacyVariantImages, uploadedPublicIds: uploadedLegacyVariantPublicIds } =
     await uploadVariantFileGroups(groupedFiles.variantImages);
   const uploadedImages = [
     ...uploadedMainImage,
     ...uploadedGalleryImages,
     ...uploadedLegacyImages,
-    ...uploadedVariantPublicIds.map(public_id => ({ public_id }))
+    ...uploadedVariantCoverPublicIds.map(public_id => ({ public_id })),
+    ...uploadedVariantGalleryPublicIds.map(public_id => ({ public_id })),
+    ...uploadedLegacyVariantPublicIds.map(public_id => ({ public_id }))
   ];
 
   try {
@@ -446,7 +567,13 @@ const createProduct = async (body, files = []) => {
         }
       }
 
-      if (variants.length) await syncProductVariants(client, newProductId, product.name, variants, uploadedVariantImages);
+      if (variants.length) {
+        await syncProductVariants(client, newProductId, product.name, variants, {
+          coverImages: uploadedVariantCoverImages,
+          galleryImages: uploadedVariantGalleryImages,
+          legacyImages: uploadedLegacyVariantImages
+        });
+      }
       if (tags.length) await replaceProductTags(client, newProductId, tags);
 
       return newProductId;
@@ -502,23 +629,35 @@ const updateProduct = async (identifier, body, files = []) => {
   if (await productSlugExists(incoming.slug, existing.id)) throw createHttpError(409, 'Ya existe un producto con ese slug');
 
   const groupedFiles = groupProductFiles(files);
+  const variants = body.variants !== undefined ? normalizeVariantsInput(body.variants) : null;
+  if (variants) {
+    validateVariants(variants);
+    validateVariantFileGroups(variants, groupedFiles);
+  } else {
+    validateVariantFileGroups([], groupedFiles);
+  }
+
   const uploadedMainImage = groupedFiles.mainImage ? await uploadFiles([groupedFiles.mainImage], 'products') : [];
   const uploadedGalleryImages = await uploadFiles(groupedFiles.galleryImages, 'products');
   const uploadedLegacyImages = await uploadFiles(groupedFiles.legacyImages, 'products');
-  const { uploaded: uploadedVariantImages, uploadedPublicIds: uploadedVariantPublicIds } =
+  const { uploaded: uploadedVariantCoverImages, uploadedPublicIds: uploadedVariantCoverPublicIds } =
+    await uploadVariantFileGroups(groupedFiles.variantCoverImages);
+  const { uploaded: uploadedVariantGalleryImages, uploadedPublicIds: uploadedVariantGalleryPublicIds } =
+    await uploadVariantFileGroups(groupedFiles.variantGalleryImages);
+  const { uploaded: uploadedLegacyVariantImages, uploadedPublicIds: uploadedLegacyVariantPublicIds } =
     await uploadVariantFileGroups(groupedFiles.variantImages);
   const uploadedImages = [
     ...uploadedMainImage,
     ...uploadedGalleryImages,
     ...uploadedLegacyImages,
-    ...uploadedVariantPublicIds.map(public_id => ({ public_id }))
+    ...uploadedVariantCoverPublicIds.map(public_id => ({ public_id })),
+    ...uploadedVariantGalleryPublicIds.map(public_id => ({ public_id })),
+    ...uploadedLegacyVariantPublicIds.map(public_id => ({ public_id }))
   ];
   const removeImageIds = parseIdList(body.remove_image_ids || body.removed_image_ids);
   const oldImages = await getProductImages(existing.id);
   const imagesToDelete = oldImages.filter(image => removeImageIds.includes(Number(image.id)));
-  const variants = body.variants !== undefined ? normalizeVariantsInput(body.variants) : null;
   const tags = body.tags !== undefined ? parseJsonArray(body.tags) : null;
-  if (variants) validateVariants(variants);
   const galleryImagePayload = body.gallery_images_meta || body.gallery_images || body.images;
   const primaryImageId = body.primary_image_id || body.main_image_id;
   const deletedVariantPublicIds = [];
@@ -588,7 +727,11 @@ const updateProduct = async (identifier, body, files = []) => {
           existing.id,
           incoming.name,
           variants,
-          uploadedVariantImages
+          {
+            coverImages: uploadedVariantCoverImages,
+            galleryImages: uploadedVariantGalleryImages,
+            legacyImages: uploadedLegacyVariantImages
+          }
         ));
       }
       if (tags) await replaceProductTags(client, existing.id, tags);
