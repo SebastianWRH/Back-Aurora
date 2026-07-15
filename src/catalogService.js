@@ -9,7 +9,9 @@ const {
   categorySlugExists,
   resolveCategoryId,
   normalizeProductInput,
-  normalizeCategoryInput
+  normalizeCategoryInput,
+  normalizeStockStatus,
+  normalizeBoolean
 } = require('./catalogRepository');
 const { uploadBuffer, deleteImages, deleteImage } = require('./cloudinaryService');
 const { createHttpError } = require('./httpError');
