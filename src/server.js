@@ -273,7 +273,7 @@ const createServer = () => {
   }));
 
   app.get('/api/admin/products', requireAdmin, asyncHandler(async (req, res) => {
-    const products = await listProducts(req.query, { includeInactive: true });
+    const products = await listProducts(req.query, { includeInactive: true, includeVariants: true });
     res.json({ products });
   }));
 

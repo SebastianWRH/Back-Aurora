@@ -36,6 +36,22 @@ const imageSelect = `
   FROM product_images
 `;
 
+const variantImageSelect = `
+  SELECT
+    id,
+    variant_id,
+    secure_url,
+    secure_url AS image_url,
+    public_id,
+    width,
+    height,
+    format,
+    alt_text,
+    sort_order,
+    created_at
+  FROM product_variant_images
+`;
+
 const isTruthy = (value) => value === true || value === 'true' || value === '1' || value === 1 || value === 'on';
 const isFalsey = (value) => value === false || value === 'false' || value === '0' || value === 0 || value === 'off';
 
@@ -65,15 +81,47 @@ const normalizeSlug = (value, fallback = '') => {
 
 const formatImages = (images = []) => images.map(image => ({
   ...image,
-  image_url: image.image_url || image.secure_url
+  id: Number(image.id),
+  product_id: image.product_id === undefined ? undefined : Number(image.product_id),
+  image_url: image.image_url || image.secure_url,
+  sort_order: Number(image.sort_order || 0),
+  is_primary: Boolean(image.is_primary)
 }));
+
+const formatVariantImages = (images = []) => images.map(image => ({
+  ...image,
+  id: Number(image.id),
+  variant_id: Number(image.variant_id),
+  image_url: image.image_url || image.secure_url,
+  sort_order: Number(image.sort_order || 0)
+}));
+
+const formatVariant = (variant, images = []) => {
+  const formattedImages = formatVariantImages(images);
+
+  return {
+    ...variant,
+    id: Number(variant.id),
+    product_id: Number(variant.product_id),
+    value: variant.value,
+    color_name: variant.value,
+    color_hex: variant.color_hex || null,
+    stock_quantity: variant.stock_quantity === null || variant.stock_quantity === undefined
+      ? null
+      : Number(variant.stock_quantity),
+    price_adjustment: Number(variant.price_adjustment || 0),
+    sort_order: Number(variant.sort_order || 0),
+    is_active: variant.is_active === undefined ? true : Boolean(variant.is_active),
+    images: formattedImages,
+    image_url: formattedImages[0]?.image_url || null
+  };
+};
 
 const formatProduct = (row, images = [], details = {}) => {
   const formattedImages = formatImages(images);
-  const primaryImage = formattedImages.find(image => image.is_primary)?.image_url ||
-    formattedImages[0]?.image_url ||
-    row.category_image_url ||
-    '';
+  const mainImage = formattedImages.find(image => image.is_primary) || formattedImages[0] || null;
+  const galleryImages = formattedImages.filter(image => !mainImage || image.id !== mainImage.id);
+  const primaryImage = mainImage?.image_url || row.category_image_url || '';
 
   const product = {
     id: Number(row.id),
@@ -95,6 +143,8 @@ const formatProduct = (row, images = [], details = {}) => {
     image_url: primaryImage,
     image: primaryImage,
     images: formattedImages,
+    main_image: mainImage,
+    gallery_images: galleryImages,
     variant_count: Number(row.variant_count || 0),
     has_variants: Number(row.variant_count || 0) > 1,
     created_at: row.created_at,
@@ -111,6 +161,7 @@ const formatProduct = (row, images = [], details = {}) => {
       image_url: row.category_image_url
     };
     product.variants = details.variants || [];
+    product.color_variants = product.variants.filter(variant => variant.name?.toLowerCase() === 'color');
     product.tags = details.tags || [];
   }
 
@@ -144,20 +195,63 @@ const getProductImages = async (productId, client = null) => {
   return result.rows;
 };
 
-const getProductVariants = async (productId) => {
-  const result = await query(`
-    SELECT id, product_id, name, value, price_adjustment, stock_status, created_at, updated_at
+const getVariantImagesForVariants = async (variantIds, client = null) => {
+  if (!variantIds.length) return new Map();
+
+  const result = await run(client, `
+    ${variantImageSelect}
+    WHERE variant_id = ANY($1::bigint[])
+    ORDER BY variant_id ASC, sort_order ASC, id ASC
+  `, [variantIds]);
+
+  return result.rows.reduce((map, image) => {
+    const variantId = Number(image.variant_id);
+    if (!map.has(variantId)) map.set(variantId, []);
+    map.get(variantId).push(image);
+    return map;
+  }, new Map());
+};
+
+const getProductVariantImages = async (variantId, client = null) => {
+  const result = await run(client, `
+    ${variantImageSelect}
+    WHERE variant_id = $1
+    ORDER BY sort_order ASC, id ASC
+  `, [variantId]);
+
+  return result.rows;
+};
+
+const getProductVariants = async (productId, client = null) => {
+  const result = await run(client, `
+    SELECT id, product_id, name, value, price_adjustment, stock_status, color_hex, stock_quantity, is_active, sort_order, created_at, updated_at
     FROM product_variants
     WHERE product_id = $1
-    ORDER BY id ASC
+    ORDER BY sort_order ASC, id ASC
   `, [productId]);
 
-  return result.rows.map((variant) => ({
-    ...variant,
-    id: Number(variant.id),
-    product_id: Number(variant.product_id),
-    price_adjustment: Number(variant.price_adjustment || 0)
-  }));
+  const imagesByVariant = await getVariantImagesForVariants(result.rows.map(variant => Number(variant.id)), client);
+  return result.rows.map(variant => formatVariant(variant, imagesByVariant.get(Number(variant.id)) || []));
+};
+
+const getVariantsForProducts = async (productIds) => {
+  if (!productIds.length) return new Map();
+
+  const result = await query(`
+    SELECT id, product_id, name, value, price_adjustment, stock_status, color_hex, stock_quantity, is_active, sort_order, created_at, updated_at
+    FROM product_variants
+    WHERE product_id = ANY($1::bigint[])
+    ORDER BY product_id ASC, sort_order ASC, id ASC
+  `, [productIds]);
+
+  const imagesByVariant = await getVariantImagesForVariants(result.rows.map(variant => Number(variant.id)));
+
+  return result.rows.reduce((map, variant) => {
+    const productId = Number(variant.product_id);
+    if (!map.has(productId)) map.set(productId, []);
+    map.get(productId).push(formatVariant(variant, imagesByVariant.get(Number(variant.id)) || []));
+    return map;
+  }, new Map());
 };
 
 const getProductTags = async (productId) => {
@@ -235,8 +329,20 @@ const listProducts = async (filters = {}, options = {}) => {
     OFFSET $${params.length + 2}
   `, [...params, limit, offset]);
 
-  const imagesByProduct = await getImagesForProducts(rowsResult.rows.map(row => Number(row.id)));
-  return rowsResult.rows.map(row => formatProduct(row, imagesByProduct.get(Number(row.id)) || []));
+  const productIds = rowsResult.rows.map(row => Number(row.id));
+  const [imagesByProduct, variantsByProduct] = await Promise.all([
+    getImagesForProducts(productIds),
+    options.includeVariants ? getVariantsForProducts(productIds) : Promise.resolve(new Map())
+  ]);
+
+  return rowsResult.rows.map(row => formatProduct(
+    row,
+    imagesByProduct.get(Number(row.id)) || [],
+    {
+      includeDetails: Boolean(options.includeVariants),
+      variants: variantsByProduct.get(Number(row.id)) || []
+    }
+  ));
 };
 
 const getProductByIdentifier = async (identifier, options = {}) => {
@@ -262,11 +368,6 @@ const getProductByIdentifier = async (identifier, options = {}) => {
     variants,
     tags
   });
-
-  formattedProduct.variants = formattedProduct.variants.map((variant, index) => ({
-    ...variant,
-    image_url: formattedProduct.images[index]?.image_url || formattedProduct.image_url
-  }));
 
   return formattedProduct;
 };
@@ -403,6 +504,8 @@ module.exports = {
   getSettings,
   getAdminByEmail,
   getProductImages,
+  getProductVariants,
+  getProductVariantImages,
   productSlugExists,
   categorySlugExists,
   resolveCategoryId,

@@ -5,13 +5,13 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: maxImageSize,
-    files: Number(process.env.MAX_IMAGE_FILES || 10)
+    files: Number(process.env.MAX_IMAGE_FILES || 25)
   }
 });
 
 const maybeProductImages = (req, res, next) => {
   if (!req.is('multipart/form-data')) return next();
-  return upload.array('images', Number(process.env.MAX_IMAGE_FILES || 10))(req, res, next);
+  return upload.any()(req, res, next);
 };
 
 const maybeCategoryImage = (req, res, next) => {
